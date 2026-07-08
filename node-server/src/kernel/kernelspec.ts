@@ -35,6 +35,8 @@ export function getKernelSearchPaths(): string[] {
     paths.push(path.join(home, '.local', 'share', 'jupyter', 'kernels'));
   }
 
+  paths.push(path.join(home, 'kernels', 'share', 'jupyter', 'kernels'));
+
   // System paths
   if (process.platform !== 'win32') {
     paths.push('/usr/local/share/jupyter/kernels');
@@ -45,6 +47,22 @@ export function getKernelSearchPaths(): string[] {
   const condaPrefix = process.env.CONDA_PREFIX;
   if (condaPrefix) {
     paths.push(path.join(condaPrefix, 'share', 'jupyter', 'kernels'));
+
+    const envsDir = path.basename(path.dirname(condaPrefix)) === 'envs'
+      ? path.dirname(condaPrefix)
+      : null;
+    const condaBase = envsDir ? path.dirname(envsDir) : condaPrefix;
+    paths.push(path.join(condaBase, 'share', 'jupyter', 'kernels'));
+
+    if (envsDir && fs.existsSync(envsDir)) {
+      try {
+        for (const envName of fs.readdirSync(envsDir)) {
+          paths.push(path.join(envsDir, envName, 'share', 'jupyter', 'kernels'));
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
   }
 
   // JUPYTER_PATH environment variable
@@ -52,6 +70,9 @@ export function getKernelSearchPaths(): string[] {
   if (jupyterPath) {
     for (const p of jupyterPath.split(path.delimiter)) {
       if (p) {
+        if (path.basename(p) === 'kernels') {
+          paths.push(p);
+        }
         paths.push(path.join(p, 'kernels'));
       }
     }
