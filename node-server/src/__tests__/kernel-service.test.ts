@@ -87,6 +87,47 @@ describe('Kernelspec Discovery', () => {
       // This is a soft expectation
       console.log(`Found ${specs.length} kernelspecs:`, specs.map(s => s.name));
     });
+
+    it('should include kernels returned by jupyter kernelspec list', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nebula-jupyter-kernel-'));
+      const kernelDir = path.join(tmpDir, 'cluster-python');
+      fs.mkdirSync(kernelDir, { recursive: true });
+      fs.writeFileSync(path.join(kernelDir, 'kernel.json'), JSON.stringify({
+        argv: ['/opt/cluster/python', '-m', 'ipykernel_launcher', '-f', '{connection_file}'],
+        display_name: 'Cluster Python',
+        language: 'python',
+      }));
+
+      const execFileSyncSpy = vi.spyOn(childProcess, 'execFileSync').mockReturnValue(JSON.stringify({
+        kernelspecs: {
+          'cluster-python': {
+            resource_dir: kernelDir,
+            spec: {
+              argv: ['/opt/cluster/python', '-m', 'ipykernel_launcher', '-f', '{connection_file}'],
+              display_name: 'Cluster Python',
+              language: 'python',
+            },
+          },
+        },
+      }));
+
+      try {
+        kernelspecModule.invalidateKernelspecCache();
+        const specs = discoverKernelSpecs(true);
+        const spec = specs.find(s => s.name === 'cluster-python');
+
+        expect(spec).toMatchObject({
+          name: 'cluster-python',
+          displayName: 'Cluster Python',
+          language: 'python',
+          path: kernelDir,
+        });
+      } finally {
+        execFileSyncSpy.mockRestore();
+        kernelspecModule.invalidateKernelspecCache();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('getKernelSpec', () => {

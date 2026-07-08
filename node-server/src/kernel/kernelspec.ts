@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as childProcess from 'child_process';
 import { KernelSpec } from './types';
 
 // Re-export KernelSpec for convenience
@@ -113,6 +114,106 @@ function readKernelSpec(kernelDir: string): KernelSpec | null {
   }
 }
 
+function addKernelSpec(specs: KernelSpec[], seenNames: Set<string>, spec: KernelSpec | null): void {
+  if (!spec || seenNames.has(spec.name)) {
+    return;
+  }
+
+  specs.push(spec);
+  seenNames.add(spec.name);
+}
+
+interface JupyterKernelListJson {
+  kernelspecs?: Record<string, {
+    resource_dir?: string;
+    spec?: {
+      display_name?: string;
+      language?: string;
+      argv?: string[];
+      env?: Record<string, string>;
+    };
+  }>;
+}
+
+function readJupyterKernelListJson(output: string): KernelSpec[] {
+  const parsed = JSON.parse(output) as JupyterKernelListJson;
+  const kernelspecs = parsed.kernelspecs || {};
+
+  return Object.entries(kernelspecs)
+    .map(([name, entry]) => {
+      const resourceDir = entry.resource_dir;
+      if (!resourceDir) {
+        return null;
+      }
+
+      const fromDisk = readKernelSpec(resourceDir);
+      if (fromDisk) {
+        return fromDisk;
+      }
+
+      return {
+        name,
+        displayName: entry.spec?.display_name || name,
+        language: entry.spec?.language || 'python',
+        path: resourceDir,
+        argv: entry.spec?.argv,
+        env: entry.spec?.env,
+      };
+    })
+    .filter((spec): spec is KernelSpec => spec !== null);
+}
+
+function readJupyterKernelListText(output: string): KernelSpec[] {
+  const specs: KernelSpec[] = [];
+
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\S+)\s+(.+)$/);
+    if (!match || match[1].toLowerCase() === 'available') {
+      continue;
+    }
+
+    const spec = readKernelSpec(match[2].trim());
+    if (spec) {
+      specs.push(spec);
+    }
+  }
+
+  return specs;
+}
+
+/**
+ * Ask the active Jupyter installation for its kernelspec list.
+ *
+ * This catches kernels from Jupyter's own path resolution that are easy to miss
+ * by manually scanning common directories, especially on clusters and conda
+ * installs where kernels live outside the active Node environment.
+ */
+function discoverJupyterCommandKernelSpecs(): KernelSpec[] {
+  try {
+    const output = childProcess.execFileSync('jupyter', ['kernelspec', 'list', '--json'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return readJupyterKernelListJson(output);
+  } catch {
+    // Fall back to the human-readable command requested by users/admins.
+  }
+
+  try {
+    const output = childProcess.execFileSync('jupyter', ['kernelspec', 'list'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return readJupyterKernelListText(output);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Perform actual kernelspec discovery (disk I/O)
  */
@@ -142,15 +243,15 @@ function performKernelspecDiscovery(): KernelSpec[] {
 
         const kernelDir = path.join(searchPath, kernelName);
         const spec = readKernelSpec(kernelDir);
-
-        if (spec) {
-          specs.push(spec);
-          seenNames.add(kernelName);
-        }
+        addKernelSpec(specs, seenNames, spec);
       }
     } catch (err) {
       // Ignore errors reading directories
     }
+  }
+
+  for (const spec of discoverJupyterCommandKernelSpecs()) {
+    addKernelSpec(specs, seenNames, spec);
   }
 
   return specs;
